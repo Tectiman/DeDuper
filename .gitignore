@@ -1,0 +1,45 @@
+# 构建产物
+dedup
+dedup.exe
+dedup-test
+filededup
+filededup.exe
+dist/
+
+# Go 工作区文件
+*.work
+
+# 测试文件
+*.test
+coverage.out
+
+# 缓存和临时文件
+*.db
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# IDE 配置
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# 项目特定
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
