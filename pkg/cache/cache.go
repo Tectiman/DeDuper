@@ -1,7 +1,8 @@
 package cache
 
 import (
-	"encoding/json"
+	"bytes"
+	"encoding/gob"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,7 +115,9 @@ func (cm *CacheManager) GetCachedHash(filepath string) (string, bool) {
 		value := bucket.Get([]byte(filepath))
 		if value != nil {
 			var entry CacheEntry
-			if json.Unmarshal(value, &entry) == nil {
+			buffer := bytes.NewBuffer(value)
+			decoder := gob.NewDecoder(buffer)
+			if decoder.Decode(&entry) == nil {
 				// 验证文件是否仍然有效
 				if cm.isFileStillValid(filepath, &entry) {
 					hash = entry.Hash
@@ -149,10 +152,13 @@ func (cm *CacheManager) CacheHash(filepath, hash string, fileSize int64, modifie
 		CachedAt: time.Now().Unix(),
 	}
 
-	entryBytes, err := json.Marshal(entry)
+	var buffer bytes.Buffer
+	encoder := gob.NewEncoder(&buffer)
+	err := encoder.Encode(entry)
 	if err != nil {
 		return err
 	}
+	entryBytes := buffer.Bytes()
 
 	return cm.db.Update(func(tx *bolt.Tx) error {
 		indices := tx.Bucket([]byte("indices"))

@@ -47,20 +47,7 @@ func runCompare(folder1, folder2, hashAlg string, workers int, dryRun bool, quie
 		return nil
 	}
 
-	// 计算第一个文件夹的哈希值（使用缓存）
-	baseHashes, hashErrors1 := calculateHashesWithCacheSimple(files1, hasher, workers, quiet, cacheMgr)
-
-	for _, err := range hashErrors1 {
-		if !quiet {
-			fmt.Printf("[ERROR] 哈希计算错误: %v\n", err)
-		}
-	}
-
-	if !quiet {
-		fmt.Printf("[INFO] 基准库建立完成，包含 %d 个唯一文件\n", len(baseHashes))
-	}
-
-	// 扫描第二个文件夹
+	// 建立第二个文件夹的文件列表
 	scanner2 := scanner.NewScanner(workers, quiet)
 	files2, err := scanner2.Scan(folder2)
 	if err != nil {
@@ -74,12 +61,103 @@ func runCompare(folder1, folder2, hashAlg string, workers int, dryRun bool, quie
 		return nil
 	}
 
-	// 计算第二个文件夹的哈希值（使用缓存）
-	compareHashes, hashErrors2 := calculateHashesWithCacheSimple(files2, hasher, workers, quiet, cacheMgr)
+	// 1. 按文件大小进行初步分组与过滤 (优化点 2)
+	sizeGroups1 := make(map[int64][]scanner.FileInfo)
+	for _, file := range files1 {
+		sizeGroups1[file.Size] = append(sizeGroups1[file.Size], file)
+	}
 
+	// 只保留在 folder1 中有相同大小文件的 folder2 文件
+	var potentialDuplicates []scanner.FileInfo
+	for _, file := range files2 {
+		if _, exists := sizeGroups1[file.Size]; exists {
+			potentialDuplicates = append(potentialDuplicates, file)
+		}
+	}
+
+	if len(potentialDuplicates) == 0 {
+		if !quiet {
+			fmt.Println("[INFO] 未发现相同大小的文件，无需比较")
+		}
+		return nil
+	}
+
+	if !quiet {
+		fmt.Printf("[INFO] 发现 %d 个可能重复的文件(大小匹配)\n", len(potentialDuplicates))
+	}
+
+	// 提取 folder1 中也需要参与比较的文件
+	var baseFilesToCompare []scanner.FileInfo
+	for _, file2 := range potentialDuplicates {
+		if group, exists := sizeGroups1[file2.Size]; exists {
+			baseFilesToCompare = append(baseFilesToCompare, group...)
+			// 从 sizeGroups1 移除，避免重复添加
+			delete(sizeGroups1, file2.Size)
+		}
+	}
+
+	// --- 新增：使用 Partial Hash 快速过滤大文件 ---
+	// 对于 > 8KB 的文件，先计算前 8KB 的哈希值进行快速比对
+	const partialHashSize = 8192
+	var baseHashes map[string][]string
+	var compareHashes map[string][]string
+
+	// 用来存放可能相同的完整文件列表
+	var baseFilesToFullHash []scanner.FileInfo
+	var compareFilesToFullHash []scanner.FileInfo
+
+	var hasLargeFiles bool
+	for _, file := range baseFilesToCompare {
+		if file.Size > partialHashSize {
+			hasLargeFiles = true
+			break
+		}
+	}
+
+	if hasLargeFiles {
+		if !quiet {
+			fmt.Println("[INFO] 启用部分哈希(Partial Hash)快速过滤策略...")
+		}
+		basePartialHashes := calculatePartialHashes(baseFilesToCompare, hasher, workers, quiet, partialHashSize)
+		comparePartialHashes := calculatePartialHashes(potentialDuplicates, hasher, workers, quiet, partialHashSize)
+
+		// 筛选出 Partial Hash 也相同的项
+		for hashValue, baseFiles := range basePartialHashes {
+			if compareFiles, exists := comparePartialHashes[hashValue]; exists {
+				baseFilesToFullHash = append(baseFilesToFullHash, baseFiles...)
+				compareFilesToFullHash = append(compareFilesToFullHash, compareFiles...)
+			}
+		}
+
+		if !quiet {
+			fmt.Printf("[INFO] Partial Hash 过滤后，剩下 %d 个可能重复的文件对\n", len(compareFilesToFullHash))
+		}
+	} else {
+		baseFilesToFullHash = baseFilesToCompare
+		compareFilesToFullHash = potentialDuplicates
+	}
+
+	if len(compareFilesToFullHash) == 0 {
+		if !quiet {
+			fmt.Println("[INFO] 未发现重复文件")
+		}
+		return nil
+	}
+
+	// 计算可能重复文件的最终（完整）哈希值
+	var hashErrors1 []error
+	baseHashes, hashErrors1 = calculateHashesWithCacheSimple(baseFilesToFullHash, hasher, workers, quiet, cacheMgr)
+	for _, err := range hashErrors1 {
+		if !quiet {
+			fmt.Printf("[ERROR] 基准文件哈希计算错误: %v\n", err)
+		}
+	}
+
+	var hashErrors2 []error
+	compareHashes, hashErrors2 = calculateHashesWithCacheSimple(compareFilesToFullHash, hasher, workers, quiet, cacheMgr)
 	for _, err := range hashErrors2 {
 		if !quiet {
-			fmt.Printf("[ERROR] 哈希计算错误: %v\n", err)
+			fmt.Printf("[ERROR] 目标文件哈希计算错误: %v\n", err)
 		}
 	}
 
@@ -217,4 +295,74 @@ func calculateHashesWithCacheSimple(files []scanner.FileInfo, hasher hash.Hasher
 	}
 
 	return hashGroups, errors
+}
+
+// calculatePartialHashes 只计算文件前 N 字节的哈希值，不使用缓存
+func calculatePartialHashes(files []scanner.FileInfo, hasher hash.Hasher, workers int, quiet bool, size int64) map[string][]scanner.FileInfo {
+	type hashJob struct {
+		file scanner.FileInfo
+	}
+
+	type hashResult struct {
+		file scanner.FileInfo
+		hash string
+		err  error
+	}
+
+	jobs := make(chan hashJob, len(files))
+	results := make(chan hashResult, len(files))
+
+	var wg sync.WaitGroup
+	for i := 0; i < min(workers, len(files)); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				// 如果文件小于设定的大小，直接读取全部；否则只读前 size 字节
+				f, err := os.Open(job.file.Path)
+				if err != nil {
+					results <- hashResult{file: job.file, err: err}
+					continue
+				}
+
+				hashValue, err := hasher.PartialSum(f, size)
+				f.Close()
+
+				if err != nil {
+					results <- hashResult{file: job.file, err: err}
+					continue
+				}
+
+				results <- hashResult{
+					file: job.file,
+					hash: hashValue,
+				}
+			}
+		}()
+	}
+
+	go func() {
+		for _, file := range files {
+			jobs <- hashJob{file: file}
+		}
+		close(jobs)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	hashGroups := make(map[string][]scanner.FileInfo)
+	for result := range results {
+		if result.err != nil {
+			if !quiet {
+				fmt.Printf("[ERROR] Partial Hash 计算失败 %s: %v\n", result.file.Path, result.err)
+			}
+		} else {
+			hashGroups[result.hash] = append(hashGroups[result.hash], result.file)
+		}
+	}
+
+	return hashGroups
 }

@@ -57,8 +57,8 @@ func (s *Scanner) Scan(root string) ([]FileInfo, error) {
 		fmt.Printf("[INFO] 开始扫描: %s\n", root)
 	}
 
-	// 使用filepath.Walk进行递归扫描
-	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	// 使用filepath.WalkDir进行递归扫描，性能优于Walk
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			if !s.quiet {
 				fmt.Printf("[WARN] 无法访问: %s, 错误: %v\n", path, err)
@@ -67,7 +67,15 @@ func (s *Scanner) Scan(root string) ([]FileInfo, error) {
 		}
 
 		// 跳过目录本身
-		if info.IsDir() {
+		if d.IsDir() {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			if !s.quiet {
+				fmt.Printf("[WARN] 获取文件信息失败: %s, 错误: %v\n", path, err)
+			}
 			return nil
 		}
 

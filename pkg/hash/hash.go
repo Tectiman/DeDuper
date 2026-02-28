@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	// 默认缓冲区大小 64KB
-	defaultBufferSize = 64 * 1024
+	// 增加默认缓冲区大小至 1MB 以优化大文件 I/O 性能
+	defaultBufferSize = 1 * 1024 * 1024
 )
 
 // Hasher 定义哈希计算接口
@@ -22,6 +22,7 @@ const (
 type Hasher interface {
 	Name() string
 	Sum(r io.Reader) (string, error)
+	PartialSum(r io.Reader, size int64) (string, error)
 }
 
 // NewHasher 创建指定算法的哈希计算器
@@ -49,17 +50,21 @@ func (h *Blake3Hasher) Sum(r io.Reader) (string, error) {
 	hasher := blake3.New()
 	buf := make([]byte, defaultBufferSize)
 
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			hasher.Write(buf[:n])
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
+	_, err := io.CopyBuffer(hasher, r, buf)
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func (h *Blake3Hasher) PartialSum(r io.Reader, size int64) (string, error) {
+	hasher := blake3.New()
+	buf := make([]byte, minInt64(size, int64(defaultBufferSize)))
+
+	_, err := io.CopyBuffer(hasher, io.LimitReader(r, size), buf)
+	if err != nil {
+		return "", err
 	}
 
 	return hex.EncodeToString(hasher.Sum(nil)), nil
@@ -76,17 +81,21 @@ func (h *SHA256Hasher) Sum(r io.Reader) (string, error) {
 	hasher := sha256.New()
 	buf := make([]byte, defaultBufferSize)
 
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			hasher.Write(buf[:n])
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
+	_, err := io.CopyBuffer(hasher, r, buf)
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func (h *SHA256Hasher) PartialSum(r io.Reader, size int64) (string, error) {
+	hasher := sha256.New()
+	buf := make([]byte, minInt64(size, int64(defaultBufferSize)))
+
+	_, err := io.CopyBuffer(hasher, io.LimitReader(r, size), buf)
+	if err != nil {
+		return "", err
 	}
 
 	return hex.EncodeToString(hasher.Sum(nil)), nil
@@ -103,18 +112,29 @@ func (h *SHA3Hasher) Sum(r io.Reader) (string, error) {
 	hasher := sha3.New256()
 	buf := make([]byte, defaultBufferSize)
 
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			hasher.Write(buf[:n])
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
+	_, err := io.CopyBuffer(hasher, r, buf)
+	if err != nil {
+		return "", err
 	}
 
 	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func (h *SHA3Hasher) PartialSum(r io.Reader, size int64) (string, error) {
+	hasher := sha3.New256()
+	buf := make([]byte, minInt64(size, int64(defaultBufferSize)))
+
+	_, err := io.CopyBuffer(hasher, io.LimitReader(r, size), buf)
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func minInt64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }

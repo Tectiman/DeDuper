@@ -146,8 +146,7 @@ func printHelp() {
   dedup --dedup ./videos --cache /tmp/mycache.db
   
   # 清除缓存
-  dedup --clear-cache
-`)
+  dedup --clear-cache`)
 }
 
 func getCacheModeDescription(cacheOpt string) string {
