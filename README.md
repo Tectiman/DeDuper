@@ -1,253 +1,251 @@
-# dedup-cli - 高效文件去重工具
+# dedup-cli
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-blue.svg)](https://golang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20FreeBSD%20%7C%20OpenBSD%20%7C%20NetBSD-blue)
 
-一个高性能、跨平台的命令行文件去重工具，采用现代化Go语言开发，支持多种哈希算法、并发处理和安全的文件操作。
+高性能跨平台文件去重工具，采用并发扫描、智能缓存与流式哈希计算，快速识别并处理重复文件。
 
-## 🌟 核心特性
+## 特性
 
-### 🔧 技术优势
-- **极速扫描**: 摒弃传统的 Walk，采用 `WalkDir` 减少巨量系统调用，大幅提升碎片化目录建立速度
-- **智能过滤**: 双文件夹对比较引入文件 Size 与 Partial Hash 预过滤机制，面对数十GB ISO 或视频文件时达到毫秒级剔除
-- **并发与 I/O**: 多线程并发计算，同时重构底层读取逻辑为 1MB `io.CopyBuffer` 驱动，榨干 SSD 读取带宽
-- **高性能缓存**: 海量缓存告别低效 JSON，改用纯血 Go `gob` 二进制协议进行本地 BoltDB 持久化
-- **跨平台与多架构**: Windows、Linux、macOS 等及 amd64/arm64 支持
-- **多算法支持**: BLAKE3（默认）、SHA256、SHA3-256
-- **内存安全**: 核心哈希过程采用基于 Limit Reader 的流式处理，杜绝大文件 OOM 风险
-- **安全保障**: 自动路径清理、操作系统权限验证、原子重命名避免文件损坏
+- **并发目录扫描** — 基于 `errgroup` 的多协程遍历，大幅提升碎片化目录扫描速度
+- **智能预过滤** — 按文件大小分组 + Partial Hash 快速筛选，避免不必要的全量哈希计算
+- **流式哈希计算** — 1MB 缓冲区流式读取，大文件不 OOM，支持 BLAKE3/SHA256/SHA3
+- **异步缓存系统** — BoltDB 持久化 + 批量异步写入，重复扫描秒级响应
+- **内存池优化** — `sync.Pool` 复用缓冲区，降低 GC 压力
+- **安全重命名** — `dep_` 前缀重命名，冲突自动编号，原子操作
+- **跨平台支持** — Windows/Linux/macOS/FreeBSD/OpenBSD/NetBSD，amd64/arm64 架构
 
-### 🎯 功能特色
-- **智能去重**: 单文件夹内重复文件检测与处理
-- **跨目录比较**: 双文件夹重复文件识别
-- **安全重命名**: dep_前缀重命名，冲突自动编号
-- **预览模式**: dry-run功能，操作前预览结果
-- **静默运行**: quiet模式，适合脚本集成
+## 安装
 
-## 🚀 快速开始
-
-### 系统要求
-- Go 1.21 或更高版本
-- 支持的操作系统：Windows 10+、Linux、macOS 10.15+、FreeBSD、OpenBSD、NetBSD
-
-### 安装与构建
+### 从源码构建
 
 ```bash
-# 克隆项目
 git clone https://github.com/yourusername/dedup-cli.git
 cd dedup-cli
-
-# 获取依赖
 go mod tidy
 
-# 构建
-# Windows
-.\build.ps1
-
-# Linux/macOS  
+# Linux/macOS
 ./build.sh
 
-# 或者直接构建当前平台
-go build -o dedup main.go
-基础使用
-bash
+# Windows PowerShell
+.\build.ps1
+
+# 或手动构建（当前平台）
+go build -trimpath -ldflags="-s -w" -o dedup main.go
+```
+
+### 二进制文件
+
+构建完成后，可执行文件位于 `dist/` 目录：
+
+| 系统 | 文件名 |
+|------|--------|
+| Linux | `dedup-linux-amd64` / `dedup-linux-arm64` |
+| macOS | `dedup-darwin-amd64` / `dedup-darwin-arm64` |
+| Windows | `dedup-windows-amd64.exe` / `dedup-windows-arm64.exe` |
+
+## 快速开始
+
+```bash
 # 查看帮助
 ./dedup --help
 
-# 单文件夹去重（推荐）
-./dedup --dedup ./Downloads
+# 单文件夹去重
+./dedup --dedup ~/Downloads
 
 # 双文件夹比较
 ./dedup --compare ./backup/old ./backup/new
-📖 详细使用指南
-单文件夹去重模式
-适用于清理单一目录内的重复文件：
-bash
-# 基础用法
-./dedup --dedup /path/to/folder
 
-# 指定哈希算法
+# 预览模式（不实际修改）
+./dedup --dedup ./photos --dry-run
+
+# 指定哈希算法和并发数
+./dedup --dedup ./videos --hash blake3 --workers 8
+```
+
+## 命令参考
+
+### 基本用法
+
+```
+dedup 文件去重工具
+
+用法:
+  dedup --dedup <folder> [选项]     单文件夹去重
+  dedup --compare <folder1> <folder2> [选项]  双文件夹比较
+  dedup --clear-cache               清除缓存
+  dedup --help                      显示帮助
+
+选项:
+  --dedup         单文件夹去重模式
+  --compare       双文件夹比较模式
+  --hash          哈希算法 (blake3|sha256|sha3) [默认：blake3]
+  --workers       并发数 (默认：CPU 核心数)
+  --dry-run       预览模式，仅显示操作
+  --quiet         静默模式，仅输出错误
+  --cache         缓存选项:
+                  default - 使用默认缓存
+                  none - 禁用缓存
+                  <路径> - 自定义缓存文件
+  --clear-cache   清除所有缓存
+  --help          显示帮助
+```
+
+### 使用示例
+
+**单文件夹去重**
+
+```bash
+# 基础用法
+./dedup --dedup ./Downloads
+
+# 使用 SHA256 算法
 ./dedup --dedup ./photos --hash sha256
 
-# 控制并发数（根据CPU核心调整）
-./dedup --dedup ./videos --workers 8
+# 禁用缓存（确保最新结果）
+./dedup --dedup ./documents --cache none
 
-# 预览模式（不实际操作）
-./dedup --dedup ./documents --dry-run
+# 静默运行（适合脚本）
+./dedup --dedup ./temp --quiet
+```
 
-# 静默运行（仅显示错误）
-./dedup --dedup ./music --quiet
+**双文件夹比较**
 
-# 组合使用
-./dedup --dedup ./downloads --hash blake3 --workers 4 --dry-run
-双文件夹比较模式
-适用于合并或同步不同目录：
-bash
-# 基础比较
-./dedup --compare /source/folder /target/folder
-
-# 实际应用场景
-./dedup --compare ./phone_backup ./computer_photos
+```bash
+# 比较两个目录
+./dedup --compare ./source ./backup
 
 # 预览重复文件
-./dedup --compare ./old_project ./new_project --dry-run
+./dedup --compare ./old ./new --dry-run
+```
 
-# 静默批量处理
-./dedup --compare ./archive ./current --quiet
-⚙️ 命令行参数详解
-参数	类型	默认值	说明
---dedup	flag	-	启用单文件夹去重模式
---compare	flag	-	启用双文件夹比较模式
---hash	string	blake3	哈希算法：blake3/sha256/sha3
---workers	int	CPU核心数	并发工作协程数量
---dry-run	flag	false	预览模式，显示但不执行操作
---quiet	flag	false	静默模式，仅输出错误信息
---help	flag	-	显示帮助信息
-🔍 工作原理
-哈希算法选择指南
-算法	速度	安全性	适用场景
-BLAKE3	⭐⭐⭐⭐⭐	⭐⭐⭐⭐	日常使用（默认）
-SHA256	⭐⭐⭐⭐	⭐⭐⭐⭐⭐	安全要求高
-SHA3	⭐⭐⭐	⭐⭐⭐⭐⭐	最高安全性
-处理流程
-文件扫描: 递归遍历目录，跳过符号链接和空文件
-预筛选: 按文件大小分组，减少不必要的哈希计算
-并发哈希: 多线程计算文件哈希值
-重复识别: 基于哈希值分组识别重复文件
-安全重命名: 生成dep前缀新文件名，处理命名冲突
-重命名规则
-plaintext
-原始文件: report.pdf
-重命名后: dep_report.pdf
+**缓存管理**
 
-如果dep_report.pdf已存在:
-dep_report(1).pdf
-dep_report(2).pdf
-...
-🛡️ 安全特性
-路径安全
-自动清理路径（filepath.Clean）
-防止路径遍历攻击
-符号链接自动跳过
-文件操作安全
-原子性重命名操作
-权限检查和错误处理
-冲突文件名自动编号
-内存安全
-流式读取，避免大文件内存溢出
-固定缓冲区大小（64KB）
-及时释放文件句柄
-📊 性能优化建议
-并发参数调优
-bash
-# 小文件密集型（照片、文档）
+```bash
+# 清除缓存
+./dedup --clear-cache
+
+# 使用自定义缓存文件
+./dedup --dedup ./large_folder --cache /tmp/dedup_cache.db
+```
+
+## 工作原理
+
+### 处理流程
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  并发扫描   │ ──► │  按大小分组  │ ──► │ Partial Hash│
+│  目录文件   │     │  快速过滤   │     │  二次筛选   │
+└─────────────┘     └─────────────┘     └─────────────┘
+                                              │
+                                              ▼
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  重命名处理  │ ◄── │  识别重复   │ ◄── │  全量哈希   │
+│  dep_前缀   │     │  哈希比对   │     │  精确匹配   │
+└─────────────┘     └─────────────┘     └─────────────┘
+```
+
+### 哈希算法对比
+
+| 算法 | 速度 | 安全性 | 推荐场景 |
+|------|------|--------|----------|
+| BLAKE3 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | 日常使用（默认） |
+| SHA256 | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | 高安全需求 |
+| SHA3 | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | 最高安全标准 |
+
+### 重命名规则
+
+```
+原始文件：report.pdf
+首次重命名：dep_report.pdf
+冲突处理：dep_report(1).pdf → dep_report(2).pdf → ...
+```
+
+## 性能优化
+
+### 并发数调优
+
+```bash
+# 小文件密集型（照片/文档）
 ./dedup --dedup ./photos --workers 16
 
-# 大文件密集型（视频、ISO镜像）
+# 大文件密集型（视频/镜像）
 ./dedup --dedup ./videos --workers 4
 
-# 混合类型
-./dedup --dedup ./downloads --workers 8  # 默认CPU核心数
-存储介质优化
-存储类型	推荐算法	并发数
-SSD	BLAKE3	CPU核心数
-HDD	SHA256	2-4
-网络存储	SHA256	2-4
-🧪 实际应用案例
-案例1: 数字照片整理
-bash
-# 清理手机备份中的重复照片
-./dedup --dedup ~/Pictures/PhoneBackup --hash blake3 --dry-run
-./dedup --dedup ~/Pictures/PhoneBackup --hash blake3
-案例2: 文档去重
-bash
-# 合并多个项目文档目录
-./dedup --compare ~/Projects/Old ~/Projects/New --dry-run
-./dedup --compare ~/Projects/Old ~/Projects/New
-案例3: 自动化脚本
-bash
-#!/bin/bash
-# 定期清理下载目录
-LOG_FILE="/var/log/dedup.log"
-FOLDERS=("/downloads" "/tmp" "/backup")
+# 混合类型（默认 CPU 核心数）
+./dedup --dedup ./downloads
+```
 
-for folder in "${FOLDERS[@]}"; do
-    echo "$(date): Processing $folder" >> $LOG_FILE
-    ./dedup --dedup "$folder" --quiet >> $LOG_FILE 2>&1
-done
-🔧 故障排除
-常见错误及解决方案
-1. "[ERROR] 路径不存在"
-bash
-# 检查路径是否正确
-ls -la /your/path
+### 缓存策略
 
+| 场景 | 推荐配置 |
+|------|----------|
+| 首次扫描 | `--cache default` |
+| 确保最新 | `--cache none` |
+| 频繁扫描同目录 | `--cache default` |
+| 临时任务 | `--cache /tmp/dedup.db` |
+
+### 基准测试
+
+测试环境：Intel i7-12700K (12 核), 32GB RAM, NVMe SSD
+
+| 文件类型 | 数量 | 总大小 | 耗时 | 内存 |
+|----------|------|--------|------|------|
+| 照片 (JPG) | 10,000 | 25GB | ~2.5 分钟 | <50MB |
+| 文档 (PDF) | 5,000 | 15GB | ~1.5 分钟 | <40MB |
+| 视频 (MP4) | 500 | 50GB | ~8 分钟 | <70MB |
+
+## 故障排除
+
+**路径不存在**
+```bash
 # 使用绝对路径
 ./dedup --dedup $(pwd)/relative/path
-2. "[ERROR] 无权限访问"
-bash
-# 检查文件权限
-ls -la /problematic/file
+```
 
-# 使用sudo（谨慎）
+**权限不足**
+```bash
+# 检查权限或使用 sudo
 sudo ./dedup --dedup /restricted/path
-3. 哈希计算失败
-bash
-# 文件被占用，稍后重试
-# 或检查磁盘空间
-df -h
-4. 内存不足
-bash
+```
+
+**内存不足**
+```bash
 # 减少并发数
 ./dedup --dedup ./large_folder --workers 2
-性能监控
-bash
-# 监控资源使用
-top -p $(pgrep dedup)
+```
 
-# 查看详细日志
-./dedup --dedup ./folder --quiet 2>&1 | tee process.log
-📈 基准测试
-测试环境
-CPU: Intel i7-12700K (12核)
-内存: 32GB DDR4
-存储: NVMe SSD
-系统: Ubuntu 22.04
-测试结果
-文件类型	数量	大小	时间	内存使用
-照片(JPG)	10,000	25GB	2分30秒	45MB
-文档(PDF)	5,000	15GB	1分45秒	38MB
-视频(MP4)	500	50GB	8分20秒	65MB
-🤝 贡献指南
-开发环境设置
-bash
-# Fork项目并克隆
-git clone https://github.com/yourusername/dedup-cli.git
-cd dedup-cli
+**哈希计算失败**
+```bash
+# 文件可能被占用，稍后重试
+# 或检查磁盘空间
+df -h
+```
 
-# 安装开发依赖
+## 开发
+
+```bash
+# 安装依赖
 go mod tidy
 
 # 运行测试
 go test ./...
-代码规范
-遵循Go官方代码风格
-添加适当的注释和文档
-确保所有功能都有单元测试
-提交PR流程
-Fork项目
-创建功能分支
-提交更改
-推送到分支
-创建Pull Request
-📄 许可证
-本项目采用 MIT 许可证 - 查看 LICENSE 文件了解详情
-🙏 致谢
-感谢以下开源项目的贡献：
-BLAKE3 - 高性能哈希算法
-Go Crypto - 密码学库
-📞 支持与反馈
-🐛 报告Bug: GitHub Issues
-💡 功能建议: GitHub Discussions
-📧 邮件联系: your-email@example.com
+
+# 代码检查
+go vet ./...
+
+# 构建（带优化）
+go build -trimpath -ldflags="-s -w" -o dedup main.go
+```
+
+## 许可证
+
+MIT License - 详见 [LICENSE](LICENSE) 文件
+
+## 致谢
+
+- [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) - 高性能哈希算法
+- [bbolt](https://github.com/etcd-io/bbolt) - 嵌入式 KV 存储
+- [golang.org/x/sync](https://pkg.go.dev/golang.org/x/sync) - 并发原语

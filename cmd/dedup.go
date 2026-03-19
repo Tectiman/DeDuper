@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"dedup/pkg/cache"
 	"dedup/pkg/hash"
 	"dedup/pkg/renamer"
@@ -23,13 +25,13 @@ func runDedup(folder string, hashAlg string, workers int, dryRun bool, quiet boo
 
 	if !quiet {
 		fmt.Printf("[INFO] 使用 %d 个工作协程\n", workers)
-		fmt.Printf("[INFO] 哈希算法: %s\n", hashAlg)
+		fmt.Printf("[INFO] 哈希算法：%s\n", hashAlg)
 	}
 
 	// 创建哈希计算器
 	hasher, err := hash.NewHasher(hashAlg)
 	if err != nil {
-		return fmt.Errorf("[ERROR] 哈希算法初始化失败: %v", err)
+		return fmt.Errorf("[ERROR] 哈希算法初始化失败：%v", err)
 	}
 
 	// 创建文件扫描器
@@ -78,8 +80,8 @@ func runDedup(folder string, hashAlg string, workers int, dryRun bool, quiet boo
 	}
 
 	if !quiet {
-		fmt.Printf("[INFO] 缓存命中: %d 个文件\n", len(cachedResults))
-		fmt.Printf("[INFO] 需要计算: %d 个文件\n", len(filesToHash))
+		fmt.Printf("[INFO] 缓存命中：%d 个文件\n", len(cachedResults))
+		fmt.Printf("[INFO] 需要计算：%d 个文件\n", len(filesToHash))
 	}
 
 	// 计算未缓存文件的哈希值
@@ -92,7 +94,7 @@ func runDedup(folder string, hashAlg string, workers int, dryRun bool, quiet boo
 		// 输出错误信息
 		for _, err := range hashErrors {
 			if !quiet {
-				fmt.Printf("[ERROR] 哈希计算错误: %v\n", err)
+				fmt.Printf("[ERROR] 哈希计算错误：%v\n", err)
 			}
 		}
 	}
@@ -153,7 +155,7 @@ func runDedup(folder string, hashAlg string, workers int, dryRun bool, quiet boo
 	return nil
 }
 
-// calculateHashesWithCache 计算哈希值并缓存结果
+// calculateHashesWithCache 计算哈希值并缓存结果 (优化版本 - 使用有界缓冲)
 func calculateHashesWithCache(files []scanner.FileInfo, hasher hash.Hasher, workers int, quiet bool, cacheMgr *cache.CacheManager) (map[string]string, []error) {
 	type hashJob struct {
 		filePath string
@@ -170,21 +172,47 @@ func calculateHashesWithCache(files []scanner.FileInfo, hasher hash.Hasher, work
 		index    int
 	}
 
-	jobs := make(chan hashJob, len(files))
-	results := make(chan hashResult, len(files))
+	// 使用有界缓冲，避免大量文件时内存爆炸
+	const maxBuffered = 100
+	jobs := make(chan hashJob, maxBuffered)
+	results := make(chan hashResult, maxBuffered)
 
 	// 启动工作协程
-	var wg sync.WaitGroup
+	var eg errgroup.Group
+	var resultsMu sync.Mutex
+	hashMap := make(map[string]string)
+	var errors []error
+	resultsReceived := 0
+
+	// 结果收集协程
+	eg.Go(func() error {
+		for result := range results {
+			resultsMu.Lock()
+			if result.err != nil {
+				errors = append(errors, result.err)
+				if !quiet {
+					fmt.Printf("[ERROR] %s: %v\n", result.filePath, result.err)
+				}
+			} else {
+				hashMap[result.filePath] = result.hash
+				// 异步缓存结果
+				cacheMgr.CacheHash(result.filePath, result.hash, result.fileSize, result.modified)
+			}
+			resultsReceived++
+			resultsMu.Unlock()
+		}
+		return nil
+	})
+
+	// 工作协程
 	for i := 0; i < min(workers, len(files)); i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
+		eg.Go(func() error {
 			for job := range jobs {
 				f, err := os.Open(job.filePath)
 				if err != nil {
 					results <- hashResult{
 						filePath: job.filePath,
-						err:      fmt.Errorf("无法打开文件: %v", err),
+						err:      fmt.Errorf("无法打开文件：%v", err),
 						index:    job.index,
 					}
 					continue
@@ -199,7 +227,7 @@ func calculateHashesWithCache(files []scanner.FileInfo, hasher hash.Hasher, work
 				if err != nil {
 					results <- hashResult{
 						filePath: job.filePath,
-						err:      fmt.Errorf("哈希计算失败: %v", err),
+						err:      fmt.Errorf("哈希计算失败：%v", err),
 						index:    job.index,
 					}
 					continue
@@ -213,7 +241,8 @@ func calculateHashesWithCache(files []scanner.FileInfo, hasher hash.Hasher, work
 					index:    job.index,
 				}
 			}
-		}(i)
+			return nil
+		})
 	}
 
 	// 发送任务
@@ -228,38 +257,9 @@ func calculateHashesWithCache(files []scanner.FileInfo, hasher hash.Hasher, work
 		close(jobs)
 	}()
 
-	// 收集结果
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// 处理结果
-	hashMap := make(map[string]string)
-	var errors []error
-	resultsSlice := make([]hashResult, len(files))
-
-	received := 0
-	for result := range results {
-		resultsSlice[result.index] = result
-		received++
-		if received == len(files) {
-			break
-		}
-	}
-
-	// 处理结果并缓存
-	for _, result := range resultsSlice {
-		if result.err != nil {
-			errors = append(errors, result.err)
-			if !quiet {
-				fmt.Printf("[ERROR] %s: %v\n", result.filePath, result.err)
-			}
-		} else {
-			hashMap[result.filePath] = result.hash
-			// 缓存结果
-			cacheMgr.CacheHash(result.filePath, result.hash, result.fileSize, result.modified)
-		}
+	// 等待所有工作完成
+	if err := eg.Wait(); err != nil {
+		return hashMap, []error{err}
 	}
 
 	return hashMap, errors

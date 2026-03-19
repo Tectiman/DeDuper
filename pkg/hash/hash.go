@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"sync"
 
 	"github.com/zeebo/blake3"
 	"golang.org/x/crypto/sha3"
@@ -14,6 +15,14 @@ const (
 	// 增加默认缓冲区大小至 1MB 以优化大文件 I/O 性能
 	defaultBufferSize = 1 * 1024 * 1024
 )
+
+// bufferPool 用于复用缓冲区，减少内存分配
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, defaultBufferSize)
+		return &buf
+	},
+}
 
 // Hasher 定义哈希计算接口
 // 支持流式计算
@@ -48,9 +57,10 @@ func (h *Blake3Hasher) Name() string {
 
 func (h *Blake3Hasher) Sum(r io.Reader) (string, error) {
 	hasher := blake3.New()
-	buf := make([]byte, defaultBufferSize)
+	bufPtr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(bufPtr)
 
-	_, err := io.CopyBuffer(hasher, r, buf)
+	_, err := io.CopyBuffer(hasher, r, *bufPtr)
 	if err != nil {
 		return "", err
 	}
@@ -60,8 +70,11 @@ func (h *Blake3Hasher) Sum(r io.Reader) (string, error) {
 
 func (h *Blake3Hasher) PartialSum(r io.Reader, size int64) (string, error) {
 	hasher := blake3.New()
-	buf := make([]byte, minInt64(size, int64(defaultBufferSize)))
+	bufSize := minInt64(size, int64(defaultBufferSize))
+	bufPtr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(bufPtr)
 
+	buf := (*bufPtr)[:bufSize]
 	_, err := io.CopyBuffer(hasher, io.LimitReader(r, size), buf)
 	if err != nil {
 		return "", err
@@ -79,9 +92,10 @@ func (h *SHA256Hasher) Name() string {
 
 func (h *SHA256Hasher) Sum(r io.Reader) (string, error) {
 	hasher := sha256.New()
-	buf := make([]byte, defaultBufferSize)
+	bufPtr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(bufPtr)
 
-	_, err := io.CopyBuffer(hasher, r, buf)
+	_, err := io.CopyBuffer(hasher, r, *bufPtr)
 	if err != nil {
 		return "", err
 	}
@@ -91,8 +105,11 @@ func (h *SHA256Hasher) Sum(r io.Reader) (string, error) {
 
 func (h *SHA256Hasher) PartialSum(r io.Reader, size int64) (string, error) {
 	hasher := sha256.New()
-	buf := make([]byte, minInt64(size, int64(defaultBufferSize)))
+	bufSize := minInt64(size, int64(defaultBufferSize))
+	bufPtr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(bufPtr)
 
+	buf := (*bufPtr)[:bufSize]
 	_, err := io.CopyBuffer(hasher, io.LimitReader(r, size), buf)
 	if err != nil {
 		return "", err
@@ -110,9 +127,10 @@ func (h *SHA3Hasher) Name() string {
 
 func (h *SHA3Hasher) Sum(r io.Reader) (string, error) {
 	hasher := sha3.New256()
-	buf := make([]byte, defaultBufferSize)
+	bufPtr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(bufPtr)
 
-	_, err := io.CopyBuffer(hasher, r, buf)
+	_, err := io.CopyBuffer(hasher, r, *bufPtr)
 	if err != nil {
 		return "", err
 	}
@@ -122,8 +140,11 @@ func (h *SHA3Hasher) Sum(r io.Reader) (string, error) {
 
 func (h *SHA3Hasher) PartialSum(r io.Reader, size int64) (string, error) {
 	hasher := sha3.New256()
-	buf := make([]byte, minInt64(size, int64(defaultBufferSize)))
+	bufSize := minInt64(size, int64(defaultBufferSize))
+	bufPtr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(bufPtr)
 
+	buf := (*bufPtr)[:bufSize]
 	_, err := io.CopyBuffer(hasher, io.LimitReader(r, size), buf)
 	if err != nil {
 		return "", err

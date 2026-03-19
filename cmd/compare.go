@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"dedup/pkg/cache"
 	"dedup/pkg/hash"
 	"dedup/pkg/renamer"
@@ -22,15 +24,15 @@ func runCompare(folder1, folder2, hashAlg string, workers int, dryRun bool, quie
 
 	if !quiet {
 		fmt.Printf("[INFO] 使用 %d 个工作协程\n", workers)
-		fmt.Printf("[INFO] 哈希算法: %s\n", hashAlg)
-		fmt.Printf("[INFO] 建立基准库: %s\n", folder1)
-		fmt.Printf("[INFO] 查找重复项: %s\n", folder2)
+		fmt.Printf("[INFO] 哈希算法：%s\n", hashAlg)
+		fmt.Printf("[INFO] 建立基准库：%s\n", folder1)
+		fmt.Printf("[INFO] 查找重复项：%s\n", folder2)
 	}
 
 	// 创建哈希计算器
 	hasher, err := hash.NewHasher(hashAlg)
 	if err != nil {
-		return fmt.Errorf("[ERROR] 哈希算法初始化失败: %v", err)
+		return fmt.Errorf("[ERROR] 哈希算法初始化失败：%v", err)
 	}
 
 	// 扫描第一个文件夹建立哈希库
@@ -61,7 +63,7 @@ func runCompare(folder1, folder2, hashAlg string, workers int, dryRun bool, quie
 		return nil
 	}
 
-	// 1. 按文件大小进行初步分组与过滤 (优化点 2)
+	// 1. 按文件大小进行初步分组与过滤
 	sizeGroups1 := make(map[int64][]scanner.FileInfo)
 	for _, file := range files1 {
 		sizeGroups1[file.Size] = append(sizeGroups1[file.Size], file)
@@ -83,7 +85,7 @@ func runCompare(folder1, folder2, hashAlg string, workers int, dryRun bool, quie
 	}
 
 	if !quiet {
-		fmt.Printf("[INFO] 发现 %d 个可能重复的文件(大小匹配)\n", len(potentialDuplicates))
+		fmt.Printf("[INFO] 发现 %d 个可能重复的文件 (大小匹配)\n", len(potentialDuplicates))
 	}
 
 	// 提取 folder1 中也需要参与比较的文件
@@ -96,13 +98,8 @@ func runCompare(folder1, folder2, hashAlg string, workers int, dryRun bool, quie
 		}
 	}
 
-	// --- 新增：使用 Partial Hash 快速过滤大文件 ---
-	// 对于 > 8KB 的文件，先计算前 8KB 的哈希值进行快速比对
+	// 使用 Partial Hash 快速过滤大文件
 	const partialHashSize = 8192
-	var baseHashes map[string][]string
-	var compareHashes map[string][]string
-
-	// 用来存放可能相同的完整文件列表
 	var baseFilesToFullHash []scanner.FileInfo
 	var compareFilesToFullHash []scanner.FileInfo
 
@@ -116,7 +113,7 @@ func runCompare(folder1, folder2, hashAlg string, workers int, dryRun bool, quie
 
 	if hasLargeFiles {
 		if !quiet {
-			fmt.Println("[INFO] 启用部分哈希(Partial Hash)快速过滤策略...")
+			fmt.Println("[INFO] 启用部分哈希 (Partial Hash) 快速过滤策略...")
 		}
 		basePartialHashes := calculatePartialHashes(baseFilesToCompare, hasher, workers, quiet, partialHashSize)
 		comparePartialHashes := calculatePartialHashes(potentialDuplicates, hasher, workers, quiet, partialHashSize)
@@ -146,18 +143,18 @@ func runCompare(folder1, folder2, hashAlg string, workers int, dryRun bool, quie
 
 	// 计算可能重复文件的最终（完整）哈希值
 	var hashErrors1 []error
-	baseHashes, hashErrors1 = calculateHashesWithCacheSimple(baseFilesToFullHash, hasher, workers, quiet, cacheMgr)
+	baseHashes, hashErrors1 := calculateHashesWithCacheSimple(baseFilesToFullHash, hasher, workers, quiet, cacheMgr)
 	for _, err := range hashErrors1 {
 		if !quiet {
-			fmt.Printf("[ERROR] 基准文件哈希计算错误: %v\n", err)
+			fmt.Printf("[ERROR] 基准文件哈希计算错误：%v\n", err)
 		}
 	}
 
 	var hashErrors2 []error
-	compareHashes, hashErrors2 = calculateHashesWithCacheSimple(compareFilesToFullHash, hasher, workers, quiet, cacheMgr)
+	compareHashes, hashErrors2 := calculateHashesWithCacheSimple(compareFilesToFullHash, hasher, workers, quiet, cacheMgr)
 	for _, err := range hashErrors2 {
 		if !quiet {
-			fmt.Printf("[ERROR] 目标文件哈希计算错误: %v\n", err)
+			fmt.Printf("[ERROR] 目标文件哈希计算错误：%v\n", err)
 		}
 	}
 
@@ -218,15 +215,44 @@ func calculateHashesWithCacheSimple(files []scanner.FileInfo, hasher hash.Hasher
 		modified time.Time
 	}
 
-	jobs := make(chan hashJob, len(files))
-	results := make(chan hashResult, len(files))
+	// 使用有界缓冲
+	const maxBuffered = 100
+	jobs := make(chan hashJob, maxBuffered)
+	results := make(chan hashResult, maxBuffered)
 
-	// 启动工作协程
-	var wg sync.WaitGroup
+	var eg errgroup.Group
+	var resultsMu sync.Mutex
+	hashGroups := make(map[string][]string)
+	var errors []error
+
+	// 结果收集协程
+	eg.Go(func() error {
+		for result := range results {
+			resultsMu.Lock()
+			if result.err != nil {
+				errors = append(errors, result.err)
+				if !quiet {
+					fmt.Printf("[ERROR] %s: %v\n", result.filePath, result.err)
+				}
+			} else {
+				hashGroups[result.hash] = append(hashGroups[result.hash], result.filePath)
+				// 异步缓存
+				if result.fileSize > 0 && !result.modified.IsZero() {
+					cacheMgr.CacheHash(result.filePath, result.hash, result.fileSize, result.modified)
+				}
+			}
+			resultsMu.Unlock()
+		}
+		return nil
+	})
+
+	// 工作协程
 	for i := 0; i < min(workers, len(files)); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		eg.Go(func() error {
+			defer func() {
+				// 确保 channel 关闭时不会 panic
+				recover()
+			}()
 			for job := range jobs {
 				// 尝试从缓存获取
 				if hashValue, found := cacheMgr.GetCachedHash(job.filePath); found {
@@ -262,7 +288,8 @@ func calculateHashesWithCacheSimple(files []scanner.FileInfo, hasher hash.Hasher
 					modified: modifiedTime,
 				}
 			}
-		}()
+			return nil
+		})
 	}
 
 	// 发送任务
@@ -273,25 +300,9 @@ func calculateHashesWithCacheSimple(files []scanner.FileInfo, hasher hash.Hasher
 		close(jobs)
 	}()
 
-	// 收集结果
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// 处理结果
-	hashGroups := make(map[string][]string)
-	var errors []error
-
-	for result := range results {
-		if result.err != nil {
-			errors = append(errors, result.err)
-			if !quiet {
-				fmt.Printf("[ERROR] %s: %v\n", result.filePath, result.err)
-			}
-		} else {
-			hashGroups[result.hash] = append(hashGroups[result.hash], result.filePath)
-		}
+	// 等待完成
+	if err := eg.Wait(); err != nil {
+		return hashGroups, []error{err}
 	}
 
 	return hashGroups, errors
@@ -309,16 +320,19 @@ func calculatePartialHashes(files []scanner.FileInfo, hasher hash.Hasher, worker
 		err  error
 	}
 
-	jobs := make(chan hashJob, len(files))
-	results := make(chan hashResult, len(files))
+	// 使用有界缓冲
+	const maxBuffered = 100
+	jobs := make(chan hashJob, maxBuffered)
+	results := make(chan hashResult, maxBuffered)
 
 	var wg sync.WaitGroup
+
+	// 工作协程
 	for i := 0; i < min(workers, len(files)); i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				// 如果文件小于设定的大小，直接读取全部；否则只读前 size 字节
 				f, err := os.Open(job.file.Path)
 				if err != nil {
 					results <- hashResult{file: job.file, err: err}

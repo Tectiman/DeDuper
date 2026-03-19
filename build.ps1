@@ -1,4 +1,4 @@
-# Windows PowerShell build script for cross-platform builds
+# Windows PowerShell build script for current platform
 $ErrorActionPreference = 'Stop'
 
 # 清理旧的构建产物
@@ -7,61 +7,66 @@ if (Test-Path "dist") {
 }
 New-Item -ItemType Directory -Path "dist" | Out-Null
 
-Write-Host "开始构建跨平台二进制文件..."
+Write-Host "开始构建当前平台二进制文件..."
 
-# 定义目标平台和架构
-$platforms = @(
-    @{GOOS="linux"; GOARCH="amd64"},
-    @{GOOS="linux"; GOARCH="arm64"},
-    @{GOOS="darwin"; GOARCH="amd64"},
-    @{GOOS="darwin"; GOARCH="arm64"},
-    @{GOOS="windows"; GOARCH="amd64"},
-    @{GOOS="windows"; GOARCH="arm64"},
-    @{GOOS="freebsd"; GOARCH="amd64"},
-    @{GOOS="freebsd"; GOARCH="arm64"},
-    @{GOOS="openbsd"; GOARCH="amd64"},
-    @{GOOS="openbsd"; GOARCH="arm64"},
-    @{GOOS="netbsd"; GOARCH="amd64"},
-    @{GOOS="netbsd"; GOARCH="arm64"}
-)
+# 获取当前平台信息
+$os = [System.Runtime.InteropServices.RuntimeInformation]::OSPlatform.ToString()
+$arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
 
-# 构建每个平台
-foreach ($platform in $platforms) {
-    $GOOS = $platform.GOOS
-    $GOARCH = $platform.GOARCH
-    
-    # 确定输出文件名
-    if ($GOOS -eq "windows") {
-        $OUTPUT = "dist\dedup-${GOOS}-${GOARCH}.exe"
-    } else {
-        $OUTPUT = "dist\dedup-${GOOS}-${GOARCH}"
+# 转换操作系统名称
+switch ($os) {
+    "Windows" { $GOOS = "windows" }
+    "Linux" { $GOOS = "linux" }
+    "OSX" { $GOOS = "darwin" }
+    "FreeBSD" { $GOOS = "freebsd" }
+    default {
+        Write-Host "未知操作系统：$os"
+        exit 1
     }
-    
-    Write-Host "构建 ${GOOS}/${GOARCH} -> ${OUTPUT}"
-    $env:GOOS = $GOOS
-    $env:GOARCH = $GOARCH
-    go build -o $OUTPUT main.go
 }
+
+# 转换架构名称
+switch ($arch) {
+    "X64" { $GOARCH = "amd64" }
+    "Arm64" { $GOARCH = "arm64" }
+    "X86" { $GOARCH = "386" }
+    "Arm" { 
+        $GOARCH = "arm"
+        $GOARM = "7"
+    }
+    default {
+        Write-Host "未知架构：$arch"
+        exit 1
+    }
+}
+
+# 确定输出文件名
+if ($GOOS -eq "windows") {
+    $OUTPUT = "dist\dedup-${GOOS}-${GOARCH}.exe"
+} else {
+    $OUTPUT = "dist\dedup-${GOOS}-${GOARCH}"
+}
+
+Write-Host "构建 ${GOOS}/${GOARCH} -> ${OUTPUT}"
+
+# 构建优化选项:
+# -trimpath: 移除文件路径，提高可重现性
+# -ldflags="-s -w": 去除符号表和调试信息，减小二进制大小
+$env:GOOS = $GOOS
+$env:GOARCH = $GOARCH
+if ($GOARM) {
+    $env:GOARM = $GOARM
+}
+
+go build -trimpath -ldflags="-s -w" -o $OUTPUT main.go
 
 # 清除环境变量
 Remove-Item Env:\GOOS -ErrorAction SilentlyContinue
 Remove-Item Env:\GOARCH -ErrorAction SilentlyContinue
+if ($GOARM) {
+    Remove-Item Env:\GOARM -ErrorAction SilentlyContinue
+}
 
 Write-Host ""
 Write-Host "构建完成！二进制文件位于 dist/ 目录:"
 Get-ChildItem dist/ | Select-Object Name, Length
-
-Write-Host ""
-Write-Host "平台说明:"
-Write-Host "  - linux:   Linux (Ubuntu, Debian, CentOS, etc.)"
-Write-Host "  - darwin:  macOS"
-Write-Host "  - windows: Windows"
-Write-Host "  - freebsd: FreeBSD"
-Write-Host "  - openbsd: OpenBSD"
-Write-Host "  - netbsd:  NetBSD"
-
-# 如果只需要 Windows 版本，使用以下命令:
-# Write-Host ""
-# Write-Host "仅构建 Windows 版本:"
-# go build -o dedup.exe main.go
-# Write-Host "Build complete: dedup.exe"
