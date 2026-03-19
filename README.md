@@ -1,7 +1,7 @@
 # dedup-cli
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-blue.svg)](https://golang.org/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-BSD--3--Clause-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20FreeBSD%20%7C%20OpenBSD%20%7C%20NetBSD-blue)
 
 高性能跨平台文件去重工具，采用并发扫描、智能缓存与流式哈希计算，快速识别并处理重复文件。
@@ -242,7 +242,7 @@ go build -trimpath -ldflags="-s -w" -o dedup main.go
 
 ## 许可证
 
-MIT License - 详见 [LICENSE](LICENSE) 文件
+BSD 3-Clause License - 详见 [LICENSE](LICENSE) 文件
 
 ## 致谢
 
